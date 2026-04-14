@@ -1,0 +1,88 @@
+{
+  "title": "OMSA Financial Services — Transaction Health",
+  "uid": "omsa-txn-health",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "tags": ["omsa", "fintech", "transactions"],
+  "panels": [
+    {
+      "id": 1, "title": "Transaction Rate (RPS) by Region",
+      "type": "graph", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "sum(rate(transactions_initiated_total[5m])) by (region)",
+        "legendFormat": "{{ region }}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 2, "title": "Transaction Failure Rate % by Region",
+      "type": "graph", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "100 * sum(rate(transactions_status_changed_total{to='FAILED'}[5m])) by (region) / sum(rate(transactions_initiated_total[5m])) by (region)",
+        "legendFormat": "{{ region }}"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [
+          { "color": "green", "value": null },
+          { "color": "yellow", "value": 1 },
+          { "color": "red", "value": 2 }
+        ]}}
+      }
+    },
+    {
+      "id": 3, "title": "P95 Transaction Latency (ms)",
+      "type": "graph", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(transaction_initiate_duration_seconds_bucket[5m])) by (le, region)) * 1000", "legendFormat": "P95 {{ region }}" },
+        { "expr": "histogram_quantile(0.99, sum(rate(transaction_initiate_duration_seconds_bucket[5m])) by (le, region)) * 1000", "legendFormat": "P99 {{ region }}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "id": 4, "title": "Transaction Volume (ZAR) — Last 1h",
+      "type": "stat", "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [{
+        "expr": "sum(increase(transactions_initiated_total[1h]))",
+        "legendFormat": "Transactions"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 5, "title": "HTTP Error Rate (5xx)",
+      "type": "stat", "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [{
+        "expr": "100 * sum(rate(http_server_requests_seconds_count{status=~'5..'}[5m])) / sum(rate(http_server_requests_seconds_count[5m]))",
+        "legendFormat": "Error Rate %"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }
+      ]}}}
+    },
+    {
+      "id": 6, "title": "JVM Heap Usage — Transaction Service",
+      "type": "graph", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "jvm_memory_used_bytes{area='heap', job='transaction-service'} / 1024 / 1024", "legendFormat": "Used MB — {{ pod }}" },
+        { "expr": "jvm_memory_max_bytes{area='heap', job='transaction-service'} / 1024 / 1024", "legendFormat": "Max MB" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "decmbytes" } }
+    },
+    {
+      "id": 7, "title": "HikariCP Connection Pool",
+      "type": "graph", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "hikaricp_connections_active{job='transaction-service'}", "legendFormat": "Active — {{ pod }}" },
+        { "expr": "hikaricp_connections_idle{job='transaction-service'}", "legendFormat": "Idle — {{ pod }}" },
+        { "expr": "hikaricp_connections_max{job='transaction-service'}", "legendFormat": "Max Pool" }
+      ]
+    },
+    {
+      "id": 8, "title": "Pod CPU & Memory — fintech-prod namespace",
+      "type": "table", "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace='fintech-prod'}[5m])) by (pod)", "legendFormat": "CPU — {{ pod }}" },
+        { "expr": "sum(container_memory_working_set_bytes{namespace='fintech-prod'}) by (pod) / 1024 / 1024", "legendFormat": "Memory MB — {{ pod }}" }
+      ]
+    }
+  ]
+}

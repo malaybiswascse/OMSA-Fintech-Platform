@@ -1,0 +1,119 @@
+groups:
+
+  - name: transaction-service-alerts
+    interval: 30s
+    rules:
+
+    - alert: TransactionServiceDown
+      expr: up{job="transaction-service"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        team:     payments
+        sla:      p1
+      annotations:
+        summary:     "Transaction Service is DOWN ({{ $labels.region }})"
+        description: "Pod {{ $labels.pod }} has been unreachable for > 1 minute. Payments are failing."
+        runbook_url: "https://runbooks.omsa.internal/transaction-service-down"
+
+    - alert: HighTransactionFailureRate
+      expr: |
+        sum(rate(transactions_status_changed_total{to="FAILED"}[5m])) by (region)
+        /
+        sum(rate(transactions_initiated_total[5m])) by (region) > 0.02
+      for: 5m
+      labels:
+        severity: critical
+        team:     payments
+        sla:      p1
+      annotations:
+        summary:     "Transaction failure rate > 2% in region {{ $labels.region }}"
+        description: "{{ $value | humanizePercentage }} of transactions failing. Threshold: 2%."
+
+    - alert: TransactionHighLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(transaction_initiate_duration_seconds_bucket[5m])) by (le, region)
+        ) > 3
+      for: 5m
+      labels:
+        severity: warning
+        team:     payments
+      annotations:
+        summary:     "P95 transaction latency > 3s in {{ $labels.region }}"
+        description: "P95 = {{ $value }}s. SLA threshold: 3 seconds."
+
+    - alert: TransactionServiceHighErrorRate
+      expr: |
+        sum(rate(http_server_requests_seconds_count{job="transaction-service",status=~"5.."}[5m]))
+        /
+        sum(rate(http_server_requests_seconds_count{job="transaction-service"}[5m])) > 0.01
+      for: 3m
+      labels:
+        severity: critical
+        sla:      p1
+      annotations:
+        summary: "HTTP 5xx error rate > 1% on transaction-service"
+
+  - name: policy-service-alerts
+    rules:
+
+    - alert: PolicyServiceDown
+      expr: up{job="policy-service"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        team:     insurance
+      annotations:
+        summary: "Policy Service is DOWN"
+
+  - name: kubernetes-alerts
+    rules:
+
+    - alert: PodCrashLooping
+      expr: rate(kube_pod_container_status_restarts_total{namespace="fintech-prod"}[15m]) * 900 > 0
+      for: 15m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod {{ $labels.pod }} crash-looping in fintech-prod"
+
+    - alert: DeploymentReplicasMismatch
+      expr: |
+        kube_deployment_spec_replicas{namespace="fintech-prod"}
+        != kube_deployment_status_ready_replicas{namespace="fintech-prod"}
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Deployment {{ $labels.deployment }} has fewer ready replicas than desired"
+
+    - alert: HPAMaxReplicas
+      expr: |
+        kube_horizontalpodautoscaler_status_current_replicas{namespace="fintech-prod"}
+        == kube_horizontalpodautoscaler_spec_max_replicas{namespace="fintech-prod"}
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: "HPA {{ $labels.horizontalpodautoscaler }} at max replicas — capacity risk"
+
+  - name: rds-alerts
+    rules:
+
+    - alert: RDSHighConnections
+      expr: aws_rds_database_connections_average > 400
+      for: 5m
+      labels:
+        severity: warning
+        team:     dba
+      annotations:
+        summary: "RDS Aurora connection count > 400 — approaching limit"
+
+    - alert: RDSHighReplicationLag
+      expr: aws_rds_aurora_replica_lag_average > 100
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Aurora replica lag > 100ms — read replica may be stale"

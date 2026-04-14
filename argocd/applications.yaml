@@ -1,0 +1,142 @@
+# argocd/transaction-service-app.yaml
+# ArgoCD Application for GitOps-driven deployment.
+# ArgoCD polls this repo every 3 minutes. Any diff in kubernetes/overlays/prod/
+# triggers an automatic sync to the EKS cluster.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: transaction-service
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name:    transaction-service
+    app.kubernetes.io/part-of: omsa-fintech-platform
+  annotations:
+    notifications.argoproj.io/subscribe.on-deployed.slack: fintech-deployments
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: fintech-alerts
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io   # Cascade delete on app removal
+spec:
+  project: omsa-fintech
+
+  source:
+    repoURL:        https://github.com/malaybiswascse/omsa-fintech-platform
+    targetRevision: main
+    path:           kubernetes/overlays/prod
+    kustomize:
+      namePrefix: ""    # Image tags updated by GitHub Actions CI
+
+  destination:
+    server:    https://kubernetes.default.svc
+    namespace: fintech-prod
+
+  syncPolicy:
+    automated:
+      prune:    true    # Remove resources deleted from Git
+      selfHeal: true    # Revert manual kubectl changes (drift prevention)
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 3
+      backoff:
+        duration:    5s
+        factor:      2
+        maxDuration: 3m
+
+  # Ignore differences that are managed outside Git (e.g. HPA-managed replicas)
+  ignoreDifferences:
+    - group: apps
+      kind:  Deployment
+      jsonPointers:
+        - /spec/replicas
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: policy-service
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name:    policy-service
+    app.kubernetes.io/part-of: omsa-fintech-platform
+  annotations:
+    notifications.argoproj.io/subscribe.on-deployed.slack:   fintech-deployments
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: fintech-alerts
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: omsa-fintech
+
+  source:
+    repoURL:        https://github.com/malaybiswascse/omsa-fintech-platform
+    targetRevision: main
+    path:           kubernetes/overlays/prod
+    kustomize: {}
+
+  destination:
+    server:    https://kubernetes.default.svc
+    namespace: fintech-prod
+
+  syncPolicy:
+    automated:
+      prune:    true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor:   2
+        maxDuration: 3m
+
+  ignoreDifferences:
+    - group: apps
+      kind:  Deployment
+      jsonPointers:
+        - /spec/replicas
+
+---
+# ArgoCD AppProject — scopes what this project can deploy
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: omsa-fintech
+  namespace: argocd
+spec:
+  description: OMSA Integrated Financial Services Platform
+
+  sourceRepos:
+    - https://github.com/malaybiswascse/omsa-fintech-platform
+
+  destinations:
+    - namespace: fintech-prod
+      server:    https://kubernetes.default.svc
+    - namespace: fintech-dev
+      server:    https://kubernetes.default.svc
+
+  clusterResourceWhitelist:
+    - group: ""
+      kind:  Namespace
+
+  namespaceResourceBlacklist:
+    - group: ""
+      kind:  ResourceQuota   # Infra team manages quotas, not ArgoCD
+
+  roles:
+    - name: read-only
+      description: Read-only access for developers
+      policies:
+        - p, proj:omsa-fintech:read-only, applications, get, omsa-fintech/*, allow
+      groups:
+        - omsa-developers
+    - name: deploy
+      description: Deploy access for CI pipeline
+      policies:
+        - p, proj:omsa-fintech:deploy, applications, sync,   omsa-fintech/*, allow
+        - p, proj:omsa-fintech:deploy, applications, update, omsa-fintech/*, allow
+      groups:
+        - omsa-devops

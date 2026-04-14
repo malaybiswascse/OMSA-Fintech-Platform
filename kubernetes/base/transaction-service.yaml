@@ -1,0 +1,207 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-service
+  namespace: fintech-prod
+  labels:
+    app:     transaction-service
+    version: v1
+    tier:    backend
+    domain:  payments
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: transaction-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge:       1
+      maxUnavailable: 0       # Zero-downtime rollout
+  template:
+    metadata:
+      labels:
+        app:     transaction-service
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path:   "/actuator/prometheus"
+        prometheus.io/port:   "8080"
+    spec:
+      serviceAccountName: transaction-service-sa
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: [transaction-service]
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: transaction-service
+      containers:
+      - name: transaction-service
+        image: PLACEHOLDER/transaction-service:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: APP_ENV
+          value: "prod"
+        - name: APP_REGION
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['topology.kubernetes.io/zone']
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: aurora-credentials
+              key:  host
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: aurora-credentials
+              key:  dbname
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: aurora-credentials
+              key:  username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aurora-credentials
+              key:  password
+        - name: JAVA_OPTS
+          value: >-
+            -XX:+UseContainerSupport
+            -XX:MaxRAMPercentage=75.0
+            -XX:+UseG1GC
+            -XX:+HeapDumpOnOutOfMemoryError
+            -XX:HeapDumpPath=/tmp/heapdump.hprof
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu:    "250m"
+          limits:
+            memory: "1Gi"
+            cpu:    "1000m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds:       15
+          failureThreshold:    3
+          timeoutSeconds:      5
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds:       10
+          failureThreshold:    3
+          timeoutSeconds:      3
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          failureThreshold: 30
+          periodSeconds:    10
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 10"]
+        securityContext:
+          runAsNonRoot:             true
+          runAsUser:                1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem:   true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+  namespace: fintech-prod
+  labels:
+    app: transaction-service
+spec:
+  type:     ClusterIP
+  selector:
+    app: transaction-service
+  ports:
+  - name:       http
+    port:       80
+    targetPort: 8080
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transaction-service-hpa
+  namespace: fintech-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind:       Deployment
+    name:       transaction-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type:               Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type:               Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 25
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Pods
+        value: 4
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: transaction-service-pdb
+  namespace: fintech-prod
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: transaction-service
