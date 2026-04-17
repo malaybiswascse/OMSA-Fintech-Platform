@@ -1,0 +1,426 @@
+// jenkins/Jenkinsfile
+// Full CI/CD pipeline for OMSA Integrated Financial Services Platform
+// Stages: Checkout → Test → Code Quality → Security Scan → Docker Build → Push ECR → Update Manifest (ArgoCD picks up)
+
+pipeline {
+
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+    app: omsa-ci
+spec:
+  serviceAccountName: jenkins-agent
+  containers:
+  - name: maven
+    image: maven:3.9.6-eclipse-temurin-17
+    command: ['cat']
+    tty: true
+    volumeMounts:
+    - name: m2-cache
+      mountPath: /root/.m2
+    - name: docker-sock
+      mountPath: /var/run/docker.sock
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 3Gi
+  - name: docker
+    image: docker:24-dind
+    securityContext:
+      privileged: true
+    env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+  - name: trivy
+    image: aquasec/trivy:latest
+    command: ['cat']
+    tty: true
+  - name: git
+    image: alpine/git:latest
+    command: ['cat']
+    tty: true
+  volumes:
+  - name: m2-cache
+    persistentVolumeClaim:
+      claimName: maven-cache-pvc
+  - name: docker-sock
+    hostPath:
+      path: /var/run/docker.sock
+"""
+        }
+    }
+
+    environment {
+        APP_NAME        = 'omsa-fintech-platform'
+        AWS_REGION      = 'af-south-1'
+        ECR_REGISTRY    = credentials('ecr-registry-url')
+        SONAR_HOST_URL  = credentials('sonarqube-url')
+        SONAR_TOKEN     = credentials('sonarqube-token')
+        GIT_CREDENTIALS = 'github-credentials'
+        SLACK_CHANNEL   = '#omsa-deployments'
+        IMAGE_TAG       = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'latest'}"
+        MANIFEST_REPO   = 'https://github.com/malaybiswascse/omsa-fintech-platform.git'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    stages {
+
+        // ── Stage 1: Checkout ──────────────────────────────────────────────────
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_AUTHOR  = sh(script: 'git log -1 --pretty=format:%an',  returnStdout: true).trim()
+                    env.GIT_MESSAGE = sh(script: 'git log -1 --pretty=format:%s',   returnStdout: true).trim()
+                    env.SHORT_SHA   = sh(script: 'git rev-parse --short HEAD',       returnStdout: true).trim()
+                }
+
+                slackSend(
+                    channel: env.SLACK_CHANNEL,
+                    color: '#439FE0',
+                    message: """🚀 *Build #${env.BUILD_NUMBER} started*
+*Repo:* ${env.APP_NAME}
+*Branch:* ${env.BRANCH_NAME}
+*Author:* ${env.GIT_AUTHOR}
+*Commit:* ${env.SHORT_SHA} — ${env.GIT_MESSAGE}"""
+                )
+            }
+        }
+
+        // ── Stage 2: Unit & Integration Tests ─────────────────────────────────
+
+        stage('Test') {
+            parallel {
+
+                stage('Transaction Service Tests') {
+                    steps {
+                        container('maven') {
+                            dir('services/transaction-service') {
+                                sh '''
+                                    mvn test -B \
+                                        -Dspring.profiles.active=test \
+                                        -Dmaven.test.failure.ignore=false
+                                '''
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            junit 'services/transaction-service/target/surefire-reports/*.xml'
+                            jacoco(
+                                execPattern: 'services/transaction-service/target/jacoco.exec',
+                                classPattern: 'services/transaction-service/target/classes',
+                                sourcePattern: 'services/transaction-service/src/main/java',
+                                minimumInstructionCoverage: '60'
+                            )
+                        }
+                    }
+                }
+
+                stage('Policy Service Tests') {
+                    steps {
+                        container('maven') {
+                            dir('services/policy-service') {
+                                sh '''
+                                    mvn test -B \
+                                        -Dspring.profiles.active=test \
+                                        -Dmaven.test.failure.ignore=false
+                                '''
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            junit 'services/policy-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Stage 3: Code Quality — SonarQube ─────────────────────────────────
+
+        stage('Code Quality') {
+            steps {
+                container('maven') {
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            mvn sonar:sonar \
+                                -pl services/transaction-service \
+                                -Dsonar.projectKey=omsa-transaction-service \
+                                -Dsonar.projectName='OMSA Transaction Service' \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.login=${SONAR_TOKEN} \
+                                -Dsonar.coverage.exclusions=**/config/**,**/dto/**,**/exception/**,**/model/** \
+                                -B
+
+                            mvn sonar:sonar \
+                                -pl services/policy-service \
+                                -Dsonar.projectKey=omsa-policy-service \
+                                -Dsonar.projectName='OMSA Policy Service' \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.login=${SONAR_TOKEN} \
+                                -B
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        // ── Stage 4: OWASP Dependency Check ───────────────────────────────────
+
+        stage('OWASP Dependency Check') {
+            steps {
+                container('maven') {
+                    sh '''
+                        mvn org.owasp:dependency-check-maven:check \
+                            -pl services/transaction-service \
+                            -DfailBuildOnCVSS=8 \
+                            -DsuppressionFile=dependency-check-suppressions.xml \
+                            -B || true
+
+                        mvn org.owasp:dependency-check-maven:check \
+                            -pl services/policy-service \
+                            -DfailBuildOnCVSS=8 \
+                            -B || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                }
+            }
+        }
+
+        // ── Stage 5: Docker Build ──────────────────────────────────────────────
+
+        stage('Docker Build') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'release/*'
+                }
+            }
+            steps {
+                container('docker') {
+                    sh """
+                        # Login to ECR
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
+                        # Build transaction-service
+                        docker build \
+                            --build-arg GIT_COMMIT=${SHORT_SHA} \
+                            --build-arg BUILD_DATE=\$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+                            --label org.opencontainers.image.revision=${SHORT_SHA} \
+                            --label org.opencontainers.image.created=\$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+                            -t ${ECR_REGISTRY}/omsa/transaction-service:${IMAGE_TAG} \
+                            -t ${ECR_REGISTRY}/omsa/transaction-service:latest \
+                            -f services/transaction-service/Dockerfile \
+                            services/transaction-service/
+
+                        # Build policy-service
+                        docker build \
+                            --build-arg GIT_COMMIT=${SHORT_SHA} \
+                            --build-arg BUILD_DATE=\$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+                            -t ${ECR_REGISTRY}/omsa/policy-service:${IMAGE_TAG} \
+                            -t ${ECR_REGISTRY}/omsa/policy-service:latest \
+                            -f services/policy-service/Dockerfile \
+                            services/policy-service/
+                    """
+                }
+            }
+        }
+
+        // ── Stage 6: Trivy Container Scan ─────────────────────────────────────
+
+        stage('Trivy Security Scan') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'release/*'
+                }
+            }
+            steps {
+                container('trivy') {
+                    sh """
+                        # Scan transaction-service image
+                        trivy image \
+                            --exit-code 1 \
+                            --severity CRITICAL \
+                            --ignore-unfixed \
+                            --format table \
+                            ${ECR_REGISTRY}/omsa/transaction-service:${IMAGE_TAG}
+
+                        # Scan policy-service image
+                        trivy image \
+                            --exit-code 1 \
+                            --severity CRITICAL \
+                            --ignore-unfixed \
+                            --format table \
+                            ${ECR_REGISTRY}/omsa/policy-service:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+
+        // ── Stage 7: Push to ECR ───────────────────────────────────────────────
+
+        stage('Push to ECR') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'release/*'
+                }
+            }
+            steps {
+                container('docker') {
+                    sh """
+                        docker push ${ECR_REGISTRY}/omsa/transaction-service:${IMAGE_TAG}
+                        docker push ${ECR_REGISTRY}/omsa/transaction-service:latest
+
+                        docker push ${ECR_REGISTRY}/omsa/policy-service:${IMAGE_TAG}
+                        docker push ${ECR_REGISTRY}/omsa/policy-service:latest
+
+                        echo "Images pushed:"
+                        echo "  ${ECR_REGISTRY}/omsa/transaction-service:${IMAGE_TAG}"
+                        echo "  ${ECR_REGISTRY}/omsa/policy-service:${IMAGE_TAG}"
+                    """
+                }
+            }
+        }
+
+        // ── Stage 8: Update K8s Manifests (ArgoCD GitOps trigger) ─────────────
+
+        stage('Update Manifests') {
+            when { branch 'main' }
+            steps {
+                container('git') {
+                    withCredentials([usernamePassword(
+                        credentialsId: env.GIT_CREDENTIALS,
+                        usernameVariable: 'GIT_USER',
+                        passwordVariable: 'GIT_TOKEN'
+                    )]) {
+                        sh """
+                            git config user.name  "jenkins-bot"
+                            git config user.email "jenkins@omsa.internal"
+
+                            # Update image tags in Kustomize overlay
+                            cd kubernetes/overlays/prod
+
+                            # Replace image tags using sed
+                            sed -i 's|newTag:.*# transaction-service|newTag: ${IMAGE_TAG} # transaction-service|g' kustomization.yaml
+                            sed -i 's|newTag:.*# policy-service|newTag: ${IMAGE_TAG} # policy-service|g' kustomization.yaml
+
+                            git add kustomization.yaml
+                            git diff --staged --quiet || git commit -m "chore(gitops): update image tags to ${IMAGE_TAG} [skip ci]
+
+Build: #${env.BUILD_NUMBER}
+Commit: ${SHORT_SHA}
+Author: ${env.GIT_AUTHOR}"
+
+                            git push https://${GIT_USER}:${GIT_TOKEN}@github.com/malaybiswascse/omsa-fintech-platform.git HEAD:main
+                        """
+                    }
+                }
+            }
+        }
+
+        // ── Stage 9: Production Deploy Gate ───────────────────────────────────
+
+        stage('Deploy to Production') {
+            when { branch 'main' }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input(
+                        message: """Deploy to PRODUCTION?
+Build:   #${env.BUILD_NUMBER}
+Tag:     ${env.IMAGE_TAG}
+Author:  ${env.GIT_AUTHOR}
+Commit:  ${env.SHORT_SHA}""",
+                        ok: 'Deploy to Production',
+                        submitter: 'devops-lead,platform-team'
+                    )
+                }
+
+                sh """
+                    # ArgoCD picks up the manifest change automatically (selfHeal: true)
+                    # This stage is just the approval gate confirmation
+                    echo "Production deployment approved."
+                    echo "ArgoCD will sync kubernetes/overlays/prod within 3 minutes."
+                    echo "Monitor: https://argocd.omsa.internal/applications"
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'good',
+                message: """✅ *Build #${env.BUILD_NUMBER} PASSED*
+*Branch:* ${env.BRANCH_NAME}
+*Image Tag:* ${env.IMAGE_TAG}
+*Duration:* ${currentBuild.durationString}
+*Author:* ${env.GIT_AUTHOR}"""
+            )
+        }
+
+        failure {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'danger',
+                message: """❌ *Build #${env.BUILD_NUMBER} FAILED*
+*Branch:* ${env.BRANCH_NAME}
+*Stage:* ${env.STAGE_NAME}
+*Author:* ${env.GIT_AUTHOR}
+<${env.BUILD_URL}|View Build Logs>"""
+            )
+
+            // Auto-rollback on main branch failure
+            script {
+                if (env.BRANCH_NAME == 'main') {
+                    echo "Rolling back via ArgoCD..."
+                    sh """
+                        argocd app rollback transaction-service --revision HEAD~1 || true
+                        argocd app rollback policy-service --revision HEAD~1 || true
+                    """ 
+                }
+            }
+        }
+
+        always {
+            // Clean workspace to save disk space on Jenkins agent
+            cleanWs()
+        }
+    }
+}

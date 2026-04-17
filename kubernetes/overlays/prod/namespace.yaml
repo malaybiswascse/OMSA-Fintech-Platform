@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fintech-prod
+  labels:
+    environment: prod
+    managed-by: argocd
+    app.kubernetes.io/part-of: omsa-fintech-platform

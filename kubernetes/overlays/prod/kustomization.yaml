@@ -7,15 +7,14 @@ resources:
   - ../../base/transaction-service.yaml
   - ../../base/policy-service.yaml
   - namespace.yaml
-  - ingress.yaml
 
 images:
   - name: transaction-service
-    newName: ACCOUNT_ID.dkr.ecr.af-south-1.amazonaws.com/transaction-service
-    newTag:  latest
+    newName: ACCOUNT_ID.dkr.ecr.af-south-1.amazonaws.com/omsa/transaction-service
+    newTag: latest # transaction-service
   - name: policy-service
-    newName: ACCOUNT_ID.dkr.ecr.af-south-1.amazonaws.com/policy-service
-    newTag:  latest
+    newName: ACCOUNT_ID.dkr.ecr.af-south-1.amazonaws.com/omsa/policy-service
+    newTag: latest # policy-service
 
 patches:
   - patch: |-
@@ -35,7 +34,4 @@ patches:
 
 commonLabels:
   environment: prod
-  managed-by:  argocd
-
-commonAnnotations:
-  deployment.kubernetes.io/managed-by: argocd
+  managed-by: argocd
