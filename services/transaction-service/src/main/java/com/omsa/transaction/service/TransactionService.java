@@ -1,12 +1,13 @@
 package com.omsa.transaction.service;
 
-import com.omsa.transaction.dto.*;
-import com.omsa.transaction.exception.TransactionNotFoundException;
+import com.omsa.transaction.dto.TransactionRequest;
+import com.omsa.transaction.dto.TransactionResponse;
+import com.omsa.transaction.dto.TransactionSummary;
 import com.omsa.transaction.exception.InvalidTransactionStateException;
+import com.omsa.transaction.exception.TransactionNotFoundException;
 import com.omsa.transaction.model.Transaction;
 import com.omsa.transaction.model.Transaction.TransactionStatus;
 import com.omsa.transaction.repository.TransactionRepository;
-import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
@@ -63,15 +64,15 @@ public class TransactionService {
     }
 
     public TransactionResponse getById(UUID id) {
-        return transactionRepository.findById(id)
-                .map(TransactionResponse::from)
+        Transaction txn = transactionRepository.findById(id)
                 .orElseThrow(() -> new TransactionNotFoundException("Transaction not found: " + id));
+        return TransactionResponse.from(txn);
     }
 
     public TransactionResponse getByReference(String reference) {
-        return transactionRepository.findByReferenceNumber(reference)
-                .map(TransactionResponse::from)
+        Transaction txn = transactionRepository.findByReferenceNumber(reference)
                 .orElseThrow(() -> new TransactionNotFoundException("Reference not found: " + reference));
+        return TransactionResponse.from(txn);
     }
 
     public Page<TransactionResponse> getByAccount(String accountId, Pageable pageable) {
@@ -89,21 +90,31 @@ public class TransactionService {
 
         TransactionStatus prev = txn.getStatus();
         txn.setStatus(newStatus);
-        if (reason != null) txn.setFailureReason(reason);
+        if (reason != null) {
+            txn.setFailureReason(reason);
+        }
 
         Transaction updated = transactionRepository.save(txn);
 
         meterRegistry.counter("transactions.status.changed",
-                "from", prev.name(), "to", newStatus.name(),
+                "from", prev.name(),
+                "to", newStatus.name(),
                 "region", txn.getRegion()).increment();
 
-        log.info("Transaction {} status: {} → {} (region: {})",
+        log.info("Transaction {} status: {} -> {} (region: {})",
                 txn.getReferenceNumber(), prev, newStatus, txn.getRegion());
+
         return TransactionResponse.from(updated);
     }
 
     public TransactionSummary getRegionSummary(String region, LocalDateTime from, LocalDateTime to) {
-        return transactionRepository.getRegionSummary(region, from, to);
+        return transactionRepository.getRegionSummary(region, from, to)
+                .orElse(TransactionSummary.builder()
+                        .region(region)
+                        .totalCount(0L)
+                        .completedCount(0L)
+                        .failedCount(0L)
+                        .build());
     }
 
     private void validateStatusTransition(TransactionStatus current, TransactionStatus next) {
@@ -117,7 +128,7 @@ public class TransactionService {
     }
 
     private String generateReference(String region) {
-        return "TXN-" + region.toUpperCase() + "-"
+        return "TXN-" + region.toUpperCase().replace("-", "") + "-"
                 + System.currentTimeMillis() + "-"
                 + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
     }

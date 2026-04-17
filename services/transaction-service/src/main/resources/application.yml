@@ -22,8 +22,6 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc.batch_size: 25
-        order_inserts: true
-        order_updates: true
 
   flyway:
     enabled: true
@@ -32,9 +30,6 @@ spring:
 
 server:
   port: 8080
-  compression:
-    enabled: true
-    mime-types: application/json
   shutdown: graceful
 
 management:
@@ -42,9 +37,6 @@ management:
     web:
       exposure:
         include: health,info,metrics,prometheus
-  endpoint:
-    health:
-      show-details: when-authorized
   metrics:
     export:
       prometheus:
@@ -53,13 +45,6 @@ management:
       application: ${spring.application.name}
       region: ${APP_REGION:za-johannesburg}
       environment: ${APP_ENV:local}
-
-logging:
-  level:
-    com.omsa: INFO
-    org.hibernate.SQL: WARN
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level [%X{traceId}] %logger{36} — %msg%n"
 
 springdoc:
   api-docs:

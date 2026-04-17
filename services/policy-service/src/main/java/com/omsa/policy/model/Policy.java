@@ -12,12 +12,16 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "policies", indexes = {
-        @Index(name = "idx_policy_customer",  columnList = "customer_id"),
-        @Index(name = "idx_policy_status",    columnList = "status"),
-        @Index(name = "idx_policy_number",    columnList = "policy_number"),
-        @Index(name = "idx_policy_region",    columnList = "region")
+        @Index(name = "idx_policy_customer", columnList = "customer_id"),
+        @Index(name = "idx_policy_status",   columnList = "status"),
+        @Index(name = "idx_policy_number",   columnList = "policy_number"),
+        @Index(name = "idx_policy_region",   columnList = "region")
 })
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Policy {
 
     @Id
@@ -67,6 +71,11 @@ public class Policy {
     @Version
     private Long version;
 
-    public enum PolicyType   { LIFE, HEALTH, VEHICLE, HOME, BUSINESS }
-    public enum PolicyStatus { PENDING, ACTIVE, SUSPENDED, EXPIRED, CANCELLED }
+    public enum PolicyType {
+        LIFE, HEALTH, VEHICLE, HOME, BUSINESS
+    }
+
+    public enum PolicyStatus {
+        PENDING, ACTIVE, SUSPENDED, EXPIRED, CANCELLED
+    }
 }

@@ -14,10 +14,15 @@ import java.util.UUID;
         @Index(name = "idx_txn_account",    columnList = "account_id"),
         @Index(name = "idx_txn_status",     columnList = "status"),
         @Index(name = "idx_txn_reference",  columnList = "reference_number"),
-        @Index(name = "idx_txn_created_at", columnList = "created_at DESC"),
-        @Index(name = "idx_txn_region",     columnList = "region")
+        @Index(name = "idx_txn_created_at", columnList = "created_at"),
+        @Index(name = "idx_txn_region",     columnList = "region"),
+        @Index(name = "idx_txn_region_status", columnList = "region, status")
 })
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Transaction {
 
     @Id
@@ -67,6 +72,11 @@ public class Transaction {
     @Version
     private Long version;
 
-    public enum TransactionType  { PAYMENT, TRANSFER, WITHDRAWAL, DEPOSIT, REFUND }
-    public enum TransactionStatus { PENDING, PROCESSING, COMPLETED, FAILED, REVERSED }
+    public enum TransactionType {
+        PAYMENT, TRANSFER, WITHDRAWAL, DEPOSIT, REFUND
+    }
+
+    public enum TransactionStatus {
+        PENDING, PROCESSING, COMPLETED, FAILED, REVERSED
+    }
 }

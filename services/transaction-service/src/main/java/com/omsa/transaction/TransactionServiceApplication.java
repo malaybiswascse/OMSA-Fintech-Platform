@@ -1,11 +1,11 @@
-package com.omsa.policy;
+package com.omsa.transaction;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class PolicyServiceApplication {
+public class TransactionServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(PolicyServiceApplication.class, args);
+        SpringApplication.run(TransactionServiceApplication.class, args);
     }
 }

@@ -43,6 +43,8 @@ management:
       region: ${APP_REGION:za-johannesburg}
       environment: ${APP_ENV:local}
 
-logging:
-  level:
-    com.omsa: INFO
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html

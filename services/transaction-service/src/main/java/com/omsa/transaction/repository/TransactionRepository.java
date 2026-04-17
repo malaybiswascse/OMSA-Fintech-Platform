@@ -29,8 +29,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
             t.region,
             COUNT(t),
             SUM(t.amount),
-            SUM(CASE WHEN t.status = 'COMPLETED' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN t.status = 'FAILED'    THEN 1 ELSE 0 END),
+            SUM(CASE WHEN t.status = 'COMPLETED' THEN 1L ELSE 0L END),
+            SUM(CASE WHEN t.status = 'FAILED'    THEN 1L ELSE 0L END),
             t.currency
         )
         FROM Transaction t
@@ -38,11 +38,12 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
           AND t.createdAt BETWEEN :from AND :to
         GROUP BY t.region, t.currency
     """)
-    TransactionSummary getRegionSummary(
-            @Param("region")  String region,
-            @Param("from")    LocalDateTime from,
-            @Param("to")      LocalDateTime to);
+    Optional<TransactionSummary> getRegionSummary(
+            @Param("region") String region,
+            @Param("from")   LocalDateTime from,
+            @Param("to")     LocalDateTime to);
 
     @Query("SELECT COUNT(t) FROM Transaction t WHERE t.status = :status AND t.region = :region")
-    long countByStatusAndRegion(@Param("status") TransactionStatus status, @Param("region") String region);
+    long countByStatusAndRegion(@Param("status") TransactionStatus status,
+                                @Param("region") String region);
 }
